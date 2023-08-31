@@ -4,12 +4,12 @@ import (
 	"fmt"
 	"log"
 	"math"
+	"net"
+	"net/http"
+	"net/rpc"
+	"os"
 	"sync"
 )
-import "net"
-import "os"
-import "net/rpc"
-import "net/http"
 
 const (
 	RunStageReady  = 0
@@ -54,12 +54,15 @@ func (c *Coordinator) Example(args *ExampleArgs, reply *ExampleReply) error {
 func (c *Coordinator) server() {
 	rpc.Register(c)
 	rpc.HandleHTTP()
+
 	sockname := coordinatorSock()
 	os.Remove(sockname)
+
 	l, e := net.Listen("unix", sockname)
 	if e != nil {
 		log.Fatal("listen error:", e)
 	}
+
 	go http.Serve(l, nil)
 }
 
