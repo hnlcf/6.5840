@@ -1,17 +1,45 @@
 package mr
 
-import "log"
+import (
+	"fmt"
+	"log"
+	"math"
+	"sync"
+)
 import "net"
 import "os"
 import "net/rpc"
 import "net/http"
 
-type Coordinator struct {
-	// Your definitions here.
+const (
+	RunStageReady  = 0
+	RunStageMap    = 1
+	RunStageReduce = 2
+	RunStageDone   = 3
+)
 
+const (
+	MapTask    = 0
+	ReduceTask = 1
+)
+
+type Task struct {
+	taskType  int
+	index     int
+	inputFile string
+}
+
+type Coordinator struct {
+	lock          sync.Mutex
+	stage         int
+	nMap          int
+	nReduce       int
+	tasks         map[string]Task
+	availableTask chan Task
 }
 
 // Your code here -- RPC handlers for the worker to call.
+// TODO
 
 // Example
 // an example RPC handler.
@@ -26,7 +54,6 @@ func (c *Coordinator) Example(args *ExampleArgs, reply *ExampleReply) error {
 func (c *Coordinator) server() {
 	rpc.Register(c)
 	rpc.HandleHTTP()
-	//l, e := net.Listen("tcp", ":1234")
 	sockname := coordinatorSock()
 	os.Remove(sockname)
 	l, e := net.Listen("unix", sockname)
@@ -43,19 +70,44 @@ func (c *Coordinator) Done() bool {
 	ret := false
 
 	// Your code here.
+	// TODO
 
 	return ret
 }
 
 // MakeCoordinator
-// create a Coordinator.
+//
+// Create a Coordinator.
 // main/mrcoordinator.go calls this function.
 // nReduce is the number of reduce tasks to use.
 func MakeCoordinator(files []string, nReduce int) *Coordinator {
-	c := Coordinator{}
+	channelLen := int(math.Max(float64(len(files)), float64(nReduce)))
+	c := Coordinator{
+		lock:          sync.Mutex{},
+		stage:         RunStageReady,
+		nMap:          len(files),
+		nReduce:       nReduce,
+		tasks:         make(map[string]Task),
+		availableTask: make(chan Task, channelLen),
+	}
 
-	// Your code here.
+	c.stage = RunStageMap
+	for i, file := range files {
+		task := Task{
+			taskType:  MapTask,
+			index:     i,
+			inputFile: file,
+		}
+		c.tasks[generateTaskId(file, i)] = task
+		c.availableTask <- task
+	}
 
+	log.Printf("===Coordiantor start===\n")
 	c.server()
+
 	return &c
+}
+
+func generateTaskId(t string, index int) string {
+	return fmt.Sprintf("%s-%d", t, index)
 }

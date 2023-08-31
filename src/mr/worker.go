@@ -27,6 +27,13 @@ func Worker(mapf func(string, string) []KeyValue,
 
 	// Your worker implementation here.
 
+	// TODO
+	// 1. get MapTask from task channel
+	// 2. read file content
+	// 3. call `mapf` and write result to tmp file
+	// 4. create ReduceTask and read tmp file
+	// 5. call `reducef` and write result to output file
+
 	// uncomment to send the Example RPC to the coordinator.
 	// CallExample()
 
@@ -63,20 +70,21 @@ func CallExample() {
 // send an RPC request to the coordinator, wait for the response.
 // usually returns true.
 // returns false if something goes wrong.
-func call(rpcname string, args interface{}, reply interface{}) bool {
-	// c, err := rpc.DialHTTP("tcp", "127.0.0.1"+":1234")
-	sockname := coordinatorSock()
-	c, err := rpc.DialHTTP("unix", sockname)
+func call(rpcName string, args interface{}, reply interface{}) bool {
+	socketName := coordinatorSock()
+
+	c, err := rpc.DialHTTP("unix", socketName)
 	if err != nil {
 		log.Fatal("dialing:", err)
 	}
+
 	defer c.Close()
 
-	err = c.Call(rpcname, args, reply)
+	err = c.Call(rpcName, args, reply)
 	if err == nil {
 		return true
+	} else {
+		fmt.Println(err)
+		return false
 	}
-
-	fmt.Println(err)
-	return false
 }
