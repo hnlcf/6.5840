@@ -3,8 +3,7 @@ package mr
 import (
 	"fmt"
 	"hash/fnv"
-	"io/ioutil"
-	"log"
+	"io"
 	"os"
 )
 
@@ -28,11 +27,11 @@ func getFileContents(task Task) (string, string) {
 
 	file, err := os.Open(inputFile)
 	if err != nil {
-		log.Fatalf("cannot open %v", inputFile)
+		logger.Warnf("cannot open %v", inputFile)
 	}
-	content, err := ioutil.ReadAll(file)
+	content, err := io.ReadAll(file)
 	if err != nil {
-		log.Fatalf("cannot read %v", inputFile)
+		logger.Warnf("cannot read %v", inputFile)
 	}
 	file.Close()
 
@@ -71,12 +70,12 @@ func Worker(mapf func(string, string) []KeyValue,
 	}
 	outputFile.Close()
 
-	log.Printf("[worker %d]: write task %s output to file %s", workerId, reply.TaskId, "output.txt")
+	logger.Infof("[worker %d]: write task %s output to file %s", workerId, reply.TaskId, "output.txt")
 
 	is_report := CallReportTaskResult(workerId, reply.TaskId, reply.Task.TaskType, ExecStatusSuccess)
 	if is_report {
-		log.Printf("[worker %d]: report result of task %s to server", workerId, reply.TaskId)
+		logger.Infof("[worker %d]: report result of task %s to server", workerId, reply.TaskId)
 	} else {
-		log.Fatalf("[worker %d]: failed to report result of task %s to server", workerId, reply.TaskId)
+		logger.Warnf("[worker %d]: failed to report result of task %s to server", workerId, reply.TaskId)
 	}
 }

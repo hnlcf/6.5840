@@ -2,7 +2,6 @@ package mr
 
 import (
 	"fmt"
-	"log"
 	"math"
 	"net"
 	"net/http"
@@ -27,27 +26,31 @@ type Coordinator struct {
 	availableTask chan Task
 }
 
+var logger = GetLogger()
+
 // Your code here -- RPC handlers for the worker to call.
 func (c *Coordinator) AskMapTask(args *TaskRequest, reply *TaskReply) error {
+
 	if args.WorkerState == WorkerStateIdle {
 		t := <-c.availableTask
 		id := generateTaskId(t.InputFile, t.Index)
 		reply.Task = t
 		reply.TaskId = id
 
-		log.Printf("[server]: Pass task %s to worker %d", id, args.WokerId)
+		logger.Infof("[server]: Pass task %s to worker %d.", id, args.WokerId)
 	} else {
-		log.Fatalf("[server]: worker %d is busy with %d", args.WokerId, args.WorkerState)
+		logger.Warnf("[server]: worker %d is busy with %d.", args.WokerId, args.WorkerState)
 	}
 
 	return nil
 }
 
 func (c *Coordinator) ReportTaskResult(args *TaskResult, reply *TaskReply) error {
+
 	if args.ExecStatus == ExecStatusSuccess {
-		log.Printf("[worker %d]: Task %s is already processed.", args.WokerId, args.TaskId)
+		logger.Infof("[server]: Task %s is already processed by worker %d.", args.TaskId, args.WokerId)
 	} else {
-		log.Fatalf("[worker %d]: Failed to process task %s", args.WokerId, args.TaskId)
+		logger.Warnf("[server]: Worker %d failed to process task %s.", args.WokerId, args.TaskId)
 	}
 	return nil
 }
@@ -62,7 +65,7 @@ func (c *Coordinator) server() {
 
 	l, e := net.Listen("unix", sockname)
 	if e != nil {
-		log.Fatal("[server]: listen error:", e)
+		logger.Error("[server]: listen error:", e)
 	}
 
 	go http.Serve(l, nil)
@@ -107,7 +110,7 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 		c.availableTask <- task
 	}
 
-	log.Printf("[server]: ===Coordiantor start===\n")
+	logger.Infof("[server]: ===Coordiantor start===")
 	c.server()
 
 	return &c
