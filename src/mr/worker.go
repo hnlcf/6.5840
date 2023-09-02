@@ -1,9 +1,12 @@
 package mr
 
-import "fmt"
-import "log"
-import "net/rpc"
-import "hash/fnv"
+import (
+	"fmt"
+	"hash/fnv"
+	"io/ioutil"
+	"log"
+	"os"
+)
 
 // KeyValue
 // Map functions return a slice of KeyValue.
@@ -20,13 +23,29 @@ func ihash(key string) int {
 	return int(h.Sum32() & 0x7fffffff)
 }
 
+func getFileContents(task Task) (string, string) {
+	inputFile := task.InputFile
+
+	file, err := os.Open(inputFile)
+	if err != nil {
+		log.Fatalf("cannot open %v", inputFile)
+	}
+	content, err := ioutil.ReadAll(file)
+	if err != nil {
+		log.Fatalf("cannot read %v", inputFile)
+	}
+	file.Close()
+
+	return inputFile, string(content)
+}
+
 // Worker
 // main/mrworker.go calls this function.
 func Worker(mapf func(string, string) []KeyValue,
 	reducef func(string, []string) string) {
 
 	// Your worker implementation here.
-
+	workerId := 0
 	// TODO
 	// 1. get MapTask from task channel
 	// 2. read file content
@@ -36,55 +55,28 @@ func Worker(mapf func(string, string) []KeyValue,
 
 	// uncomment to send the Example RPC to the coordinator.
 	// CallExample()
-
-}
-
-// CallExample
-// example function to show how to make an RPC call to the coordinator.
-//
-// the RPC argument and reply types are defined in rpc.go.
-func CallExample() {
-
-	// declare an argument structure.
-	args := ExampleArgs{}
-
-	// fill in the argument(s).
-	args.X = 99
-
-	// declare a reply structure.
-	reply := ExampleReply{}
-
-	// send the RPC request, wait for the reply.
-	// the "Coordinator.Example" tells the
-	// receiving server that we'd like to call
-	// the Example() method of struct Coordinator.
-	ok := call("Coordinator.Example", &args, &reply)
-	if ok {
-		// reply.Y should be 100.
-		fmt.Printf("reply.Y %v\n", reply.Y)
-	} else {
-		fmt.Printf("call failed!\n")
-	}
-}
-
-// send an RPC request to the coordinator, wait for the response.
-// usually returns true.
-// returns false if something goes wrong.
-func call(rpcName string, args interface{}, reply interface{}) bool {
-	socketName := coordinatorSock()
-
-	c, err := rpc.DialHTTP("unix", socketName)
-	if err != nil {
-		log.Fatal("dialing:", err)
+	is_get_task := false
+	reply := TaskReply{}
+	for !is_get_task {
+		reply, is_get_task = CallAskMapTask()
 	}
 
-	defer c.Close()
+	file, content := getFileContents(reply.Task)
+	kva := mapf(file, content)
 
-	err = c.Call(rpcName, args, reply)
-	if err == nil {
-		return true
+	outputFile, _ := os.Create("output.txt")
+	for i := 0; i < len(kva); i++ {
+		kv := kva[i]
+		fmt.Fprintf(outputFile, "%s, %s\n", kv.Key, kv.Value)
+	}
+	outputFile.Close()
+
+	log.Printf("[worker %d]: write task %s output to file %s", workerId, reply.TaskId, "output.txt")
+
+	is_report := CallReportTaskResult(workerId, reply.TaskId, reply.Task.TaskType, ExecStatusSuccess)
+	if is_report {
+		log.Printf("[worker %d]: report result of task %s to server", workerId, reply.TaskId)
 	} else {
-		fmt.Println(err)
-		return false
+		log.Fatalf("[worker %d]: failed to report result of task %s to server", workerId, reply.TaskId)
 	}
 }

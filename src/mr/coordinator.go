@@ -18,20 +18,9 @@ const (
 	RunStageDone   = 3
 )
 
-const (
-	MapTask    = 0
-	ReduceTask = 1
-)
-
-type Task struct {
-	taskType  int
-	index     int
-	inputFile string
-}
-
 type Coordinator struct {
 	lock          sync.Mutex
-	stage         int
+	runStage      int
 	nMap          int
 	nReduce       int
 	tasks         map[string]Task
@@ -39,14 +28,27 @@ type Coordinator struct {
 }
 
 // Your code here -- RPC handlers for the worker to call.
-// TODO
+func (c *Coordinator) AskMapTask(args *TaskRequest, reply *TaskReply) error {
+	if args.WorkerState == WorkerStateIdle {
+		t := <-c.availableTask
+		id := generateTaskId(t.InputFile, t.Index)
+		reply.Task = t
+		reply.TaskId = id
 
-// Example
-// an example RPC handler.
-//
-// the RPC argument and reply types are defined in rpc.go.
-func (c *Coordinator) Example(args *ExampleArgs, reply *ExampleReply) error {
-	reply.Y = args.X + 1
+		log.Printf("[server]: Pass task %s to worker %d", id, args.WokerId)
+	} else {
+		log.Fatalf("[server]: worker %d is busy with %d", args.WokerId, args.WorkerState)
+	}
+
+	return nil
+}
+
+func (c *Coordinator) ReportTaskResult(args *TaskResult, reply *TaskReply) error {
+	if args.ExecStatus == ExecStatusSuccess {
+		log.Printf("[worker %d]: Task %s is already processed.", args.WokerId, args.TaskId)
+	} else {
+		log.Fatalf("[worker %d]: Failed to process task %s", args.WokerId, args.TaskId)
+	}
 	return nil
 }
 
@@ -60,7 +62,7 @@ func (c *Coordinator) server() {
 
 	l, e := net.Listen("unix", sockname)
 	if e != nil {
-		log.Fatal("listen error:", e)
+		log.Fatal("[server]: listen error:", e)
 	}
 
 	go http.Serve(l, nil)
@@ -87,25 +89,25 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 	channelLen := int(math.Max(float64(len(files)), float64(nReduce)))
 	c := Coordinator{
 		lock:          sync.Mutex{},
-		stage:         RunStageReady,
+		runStage:      RunStageReady,
 		nMap:          len(files),
 		nReduce:       nReduce,
 		tasks:         make(map[string]Task),
 		availableTask: make(chan Task, channelLen),
 	}
 
-	c.stage = RunStageMap
+	c.runStage = RunStageMap
 	for i, file := range files {
 		task := Task{
-			taskType:  MapTask,
-			index:     i,
-			inputFile: file,
+			TaskType:  TaskTypeMap,
+			Index:     i,
+			InputFile: file,
 		}
 		c.tasks[generateTaskId(file, i)] = task
 		c.availableTask <- task
 	}
 
-	log.Printf("===Coordiantor start===\n")
+	log.Printf("[server]: ===Coordiantor start===\n")
 	c.server()
 
 	return &c
