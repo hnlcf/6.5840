@@ -1,6 +1,8 @@
 package mr
 
 import (
+	"os"
+
 	"github.com/sirupsen/logrus"
 )
 
@@ -12,6 +14,9 @@ func InitLogger() {
 		FullTimestamp:    true,
 		DisableTimestamp: false,
 	})
+
+	logru.SetOutput(os.Stdout)
+	logru.SetLevel(logrus.InfoLevel)
 }
 
 // GetLogger returns the package-level logger for use in other parts of your program.

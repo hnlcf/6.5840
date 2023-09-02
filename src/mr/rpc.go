@@ -42,42 +42,38 @@ type TaskRequest struct {
 }
 
 type TaskReply struct {
-	Task   Task
-	TaskId string
+	Task        Task
+	TaskId      string
+	ServerStage int
 }
 
 type TaskResult struct {
 	WokerId int
 
-	TaskId   string
-	TaskType int
+	TaskId    string
+	TaskIndex int
+	TaskType  int
 
 	ExecStatus int
-	Msg        interface{}
+	Output     string
 }
 
 // Add your RPC definitions here.
-func CallAskMapTask() (TaskReply, bool) {
+func CallAskTask() (TaskReply, bool) {
 	args := TaskRequest{
 		WokerId:     0,
 		WorkerState: WorkerStateIdle,
 	}
 	reply := TaskReply{}
 
-	is_ok := call("Coordinator.AskMapTask", &args, &reply)
+	is_ok := call("Coordinator.AskTask", &args, &reply)
 
 	return reply, is_ok
 }
 
-func CallReportTaskResult(workerId int, taskId string, taskType int, execStatus int) bool {
-	args := TaskResult{
-		WokerId:    workerId,
-		TaskId:     taskId,
-		TaskType:   taskType,
-		ExecStatus: execStatus,
-		Msg:        nil,
-	}
-	reply := TaskReply{}
+func CallReportTaskResult(res TaskResult) bool {
+	args := res
+	reply := 0
 
 	is_ok := call("Coordinator.ReportTaskResult", &args, &reply)
 
