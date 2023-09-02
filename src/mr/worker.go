@@ -39,15 +39,15 @@ func getFileContents(task Task) (string, string) {
 
 	file, err := os.Open(inputFile)
 	if err != nil {
-		logger.Warnf("cannot open %v", inputFile)
+		logger.Warnf("[worker %d]: Cannot open %v.", workerId, inputFile)
 	}
 	content, err := io.ReadAll(file)
 	if err != nil {
-		logger.Warnf("cannot read %v", inputFile)
+		logger.Warnf("[worker %d]: Cannot read %v.", workerId, inputFile)
 	}
 	file.Close()
 
-	logger.Debugf("Read file contents from %s", inputFile)
+	logger.Debugf("[worker %d]: Read file contents from %s.", workerId, inputFile)
 	return inputFile, string(content)
 }
 
@@ -55,45 +55,53 @@ func getFileContents(task Task) (string, string) {
 // main/mrworker.go calls this function.
 func Worker(mapf func(string, string) []KeyValue,
 	reducef func(string, []string) string) {
+	is_init, initReply := CallInitWorker()
+	if is_init {
+		workerId = initReply.WokerId
+	}
 
-	// TODO
-	// 1. get MapTask from task channel
-	// 2. read file content
-	// 3. call `mapf` and write result to tmp file
-	// 4. create ReduceTask and read tmp file
-	// 5. call `reducef` and write result to output file
-
+	runStage := RunStageReady
 	for {
 		is_get_task := false
 		reply := TaskReply{}
 		for !is_get_task {
-			reply, is_get_task = CallAskTask()
+			is_get_task, reply = CallAskTask(workerId)
 		}
+		logger.Debugf("[worker %d]: Get a new task with stage %d.", workerId, reply.ServerStage)
 
-		if reply.ServerStage == RunStageDone {
-			logger.Infof("[worker %d]: recieve exit signal from server", workerId)
+		runStage = reply.ServerStage
+		if runStage == RunStageDone {
+			logger.Infof("[worker %d]: Recieve exit signal from server.", workerId)
 			break
 		}
 
-		logger.Infof("[worker %d]: get task %s from server", workerId, reply.TaskId)
+		logger.Infof("[worker %d]: Get task %s from server.", workerId, reply.TaskId)
 
 		is_report := false
+		taskResult := TaskResult{}
 		if reply.Task.TaskType == TaskTypeMap {
-			taskResult := processMapTask(reply.TaskId, reply.Task, mapf)
-			is_report = CallReportTaskResult(taskResult)
+			taskResult = processMapTask(reply.TaskId, reply.Task, mapf)
 		}
 		if reply.Task.TaskType == TaskTypeReduce {
-			taskResult := processReduceTask(reply.TaskId, reply.Task, reducef)
-			is_report = CallReportTaskResult(taskResult)
+			taskResult = processReduceTask(reply.TaskId, reply.Task, reducef)
 		}
+		logger.Debugf("[worker %d]: Already process task %s.", workerId, reply.TaskId)
 
+		is_report, runStage = CallReportTaskResult(taskResult)
 		if is_report {
-			logger.Infof("[worker %d]: report result of task %s to server", workerId, reply.TaskId)
+			logger.Infof("[worker %d]: Report result of task %s to server.", workerId, reply.TaskId)
 		} else {
-			logger.Warnf("[worker %d]: failed to report result of task %s to server", workerId, reply.TaskId)
+			logger.Warnf("[worker %d]: Failed to report result of task %s to server.", workerId, reply.TaskId)
+			continue
 		}
 
+		if runStage == RunStageDone {
+			logger.Infof("[worker %d]: Recieve exit signal from server.", workerId)
+			break
+		}
 	}
+
+	CallAskQuit(workerId)
 }
 
 func processMapTask(taskId string, task Task, mapf func(string, string) []KeyValue) TaskResult {
@@ -110,9 +118,7 @@ func processMapTask(taskId string, task Task, mapf func(string, string) []KeyVal
 
 	res := TaskResult{
 		WokerId:    workerId,
-		TaskId:     taskId,
-		TaskIndex:  task.Index,
-		TaskType:   task.TaskType,
+		WorkTask:   task,
 		ExecStatus: ExecStatusSuccess,
 		Output:     output,
 	}
@@ -127,8 +133,6 @@ func processReduceTask(taskId string, task Task, reducef func(string, []string) 
 	for _, l := range lines {
 		if len(l) != 0 {
 			parts := strings.Split(l, ",")
-
-			logger.Debugf("Parse KV: %s,%s", parts[0], parts[1])
 
 			kv := KeyValue{Key: parts[0], Value: parts[1]}
 			intermediate = append(intermediate, kv)
@@ -165,9 +169,7 @@ func processReduceTask(taskId string, task Task, reducef func(string, []string) 
 
 	res := TaskResult{
 		WokerId:    workerId,
-		TaskId:     taskId,
-		TaskIndex:  task.Index,
-		TaskType:   task.TaskType,
+		WorkTask:   task,
 		ExecStatus: ExecStatusSuccess,
 		Output:     output,
 	}

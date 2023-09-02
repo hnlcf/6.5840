@@ -16,7 +16,7 @@ func InitLogger() {
 	})
 
 	logru.SetOutput(os.Stdout)
-	logru.SetLevel(logrus.InfoLevel)
+	logru.SetLevel(logrus.DebugLevel)
 }
 
 // GetLogger returns the package-level logger for use in other parts of your program.

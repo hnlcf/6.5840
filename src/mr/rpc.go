@@ -20,9 +20,8 @@ const (
 )
 
 const (
-	WorkerStateIdle   = 0
-	WorkerStateMap    = 1
-	WorkerStateReduce = 2
+	WorkerStateIdle    = 0
+	WorkerStateProcess = 1
 )
 
 const (
@@ -30,9 +29,26 @@ const (
 	ExecStatusFail    = 1
 )
 
+type InitRequest struct {
+}
+
+type InitReply struct {
+	WokerId int
+}
+
+type QuitRequest struct {
+	WokerId int
+	AskQuit bool
+}
+
+type QuitReply struct {
+	IsQuit bool
+}
+
 type Task struct {
 	TaskType  int
 	Index     int
+	Id        string
 	InputFile string
 }
 
@@ -42,42 +58,63 @@ type TaskRequest struct {
 }
 
 type TaskReply struct {
+	isSuccess   bool
 	Task        Task
 	TaskId      string
 	ServerStage int
 }
 
 type TaskResult struct {
-	WokerId int
-
-	TaskId    string
-	TaskIndex int
-	TaskType  int
-
+	WokerId    int
+	WorkTask   Task
 	ExecStatus int
 	Output     string
 }
 
 // Add your RPC definitions here.
-func CallAskTask() (TaskReply, bool) {
+func CallInitWorker() (bool, InitReply) {
+	args := InitRequest{}
+	reply := InitReply{}
+
+	is_ok := call("Coordinator.InitWorker", &args, &reply)
+
+	return is_ok, reply
+}
+
+func CallAskTask(wokerId int) (bool, TaskReply) {
 	args := TaskRequest{
-		WokerId:     0,
+		WokerId:     wokerId,
 		WorkerState: WorkerStateIdle,
 	}
-	reply := TaskReply{}
+	reply := TaskReply{
+		isSuccess: true,
+	}
 
 	is_ok := call("Coordinator.AskTask", &args, &reply)
 
-	return reply, is_ok
+	return is_ok && reply.isSuccess, reply
 }
 
-func CallReportTaskResult(res TaskResult) bool {
+func CallReportTaskResult(res TaskResult) (bool, int) {
 	args := res
 	reply := 0
 
 	is_ok := call("Coordinator.ReportTaskResult", &args, &reply)
 
-	return is_ok
+	return is_ok, reply
+}
+func CallAskQuit(workerId int) (bool, QuitReply) {
+	args := QuitRequest{
+		WokerId: workerId,
+		AskQuit: true,
+	}
+	reply := QuitReply{
+		IsQuit: false,
+	}
+
+	is_ok := call("Coordinator.AskQuit", &args, &reply)
+
+	return is_ok, reply
 }
 
 // send an RPC request to the coordinator, wait for the response.

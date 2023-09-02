@@ -16,11 +16,31 @@ const (
 	RunStageDone    = 2
 )
 
+type Set map[int]bool
+
+func (s Set) Add(item int) {
+	s[item] = true
+}
+
+func (s Set) Remove(item int) {
+	delete(s, item)
+}
+
+func (s Set) Contains(item int) bool {
+	return s[item]
+}
+
+func (s Set) IsEmpty() bool {
+	return len(s) == 0
+}
+
 type Coordinator struct {
+	RunStage int
+
 	lock          sync.Mutex
-	RunStage      int
 	nMap          int
 	nReduce       int
+	workers       Set
 	tasks         map[string]Task
 	availableTask chan Task
 }
@@ -28,20 +48,56 @@ type Coordinator struct {
 var logger = GetLogger()
 
 // Your code here -- RPC handlers for the worker to call.
+
+func (c *Coordinator) InitWorker(args *InitRequest, reply *InitReply) error {
+	id := len(c.workers)
+
+	reply.WokerId = id
+	c.workers[id] = true
+
+	logger.Infof("[server]: Register a new worker %d.", id)
+
+	return nil
+}
+
 func (c *Coordinator) AskTask(args *TaskRequest, reply *TaskReply) error {
+	logger.Debugf("[server]: Get a new ask from worker %d.", args.WokerId)
+
 	if len(c.tasks) == 0 {
+		logger.Debugf("[server]: All tasks done.")
+
 		c.RunStage = RunStageDone
+		reply.isSuccess = true
 	} else {
 		if args.WorkerState == WorkerStateIdle {
-			t := <-c.availableTask
-			id := generateTaskId(t.InputFile, t.Index)
-			reply.Task = t
-			reply.TaskId = id
+			select {
+			case t := <-c.availableTask:
+				id := generateTaskId(t.InputFile, t.Index)
+				reply.Task = t
+				reply.TaskId = id
 
-			logger.Infof("[server]: Pass task %s to worker %d.", id, args.WokerId)
+				c.lock.Lock()
+				delete(c.tasks, id)
+				c.lock.Unlock()
+
+				logger.Infof("[server]: Pass task %s to worker %d.", id, args.WokerId)
+
+				c.RunStage = RunStageProcess
+				reply.isSuccess = true
+			default:
+				logger.Warnf("[server]: Chanel is empty now, please retry.")
+
+				c.RunStage = RunStageProcess
+				reply.isSuccess = false
+			}
 		} else {
-			logger.Warnf("[server]: worker %d is busy with %d.", args.WokerId, args.WorkerState)
+			logger.Warnf("[server]: worker %d is busy with state %d.", args.WokerId, args.WorkerState)
+
+			c.RunStage = RunStageProcess
+			reply.isSuccess = false
 		}
+
+		logger.Debugf("[server]: %d tasks left.", len(c.tasks))
 	}
 
 	reply.ServerStage = c.RunStage
@@ -51,34 +107,53 @@ func (c *Coordinator) AskTask(args *TaskRequest, reply *TaskReply) error {
 
 func (c *Coordinator) ReportTaskResult(args *TaskResult, reply *int) error {
 	if args.ExecStatus == ExecStatusSuccess {
-		c.lock.Lock()
-		delete(c.tasks, args.TaskId)
-		c.lock.Unlock()
+		logger.Infof("[server]: Task %s is already processed by worker %d.", args.WorkTask.Id, args.WokerId)
 
-		logger.Infof("[server]: Task %s is already processed by worker %d.", args.TaskId, args.WokerId)
-	} else {
-		c.availableTask <- c.tasks[args.TaskId]
+		if args.WorkTask.TaskType == TaskTypeMap {
+			id := generateTaskId(args.Output, args.WorkTask.Index)
+			reduceTask := Task{
+				TaskType:  TaskTypeReduce,
+				Index:     args.WorkTask.Index,
+				Id:        id,
+				InputFile: args.Output,
+			}
 
-		logger.Warnf("[server]: Worker %d failed to process task %s.", args.WokerId, args.TaskId)
-	}
+			c.lock.Lock()
+			c.tasks[id] = reduceTask
+			c.lock.Unlock()
 
-	if args.TaskType == TaskTypeMap {
-		reduceTask := Task{
-			TaskType:  TaskTypeReduce,
-			Index:     args.TaskIndex,
-			InputFile: args.Output,
+			c.availableTask <- reduceTask
+
+			logger.Infof("[server]: Create new reduce task %s based on map task %s.", generateTaskId(reduceTask.InputFile, reduceTask.Index), args.WorkTask.Id)
 		}
+	} else {
 		c.lock.Lock()
-		c.tasks[generateTaskId(reduceTask.InputFile, reduceTask.Index)] = reduceTask
+		c.tasks[args.WorkTask.Id] = args.WorkTask
 		c.lock.Unlock()
 
-		c.availableTask <- reduceTask
+		c.availableTask <- c.tasks[args.WorkTask.Id]
+
+		logger.Warnf("[server]: Worker %d failed to process task %s.", args.WokerId, args.WorkTask.Id)
 	}
 
 	if len(c.tasks) == 0 {
 		*reply = RunStageDone
 	} else {
 		*reply = RunStageProcess
+	}
+
+	return nil
+}
+
+func (c *Coordinator) AskQuit(args *QuitRequest, reply *QuitReply) error {
+	if c.RunStage == RunStageDone && args.AskQuit {
+		reply.IsQuit = true
+
+		c.lock.Lock()
+		c.workers.Remove(args.WokerId)
+		c.lock.Unlock()
+
+		logger.Infof("[server]: worker %d is quit now.", args.WokerId)
 	}
 
 	return nil
@@ -104,10 +179,15 @@ func (c *Coordinator) server() {
 // main/mrcoordinator.go calls Done() periodically to find out
 // if the entire job has finished.
 func (c *Coordinator) Done() bool {
+	logger.Debug("[server]: Coordinaltor work loop.")
+
 	ret := false
 
 	// Your code here.
-	// TODO
+	if len(c.tasks) == 0 {
+		ret = true
+		logger.Debug("[server]: Coordinaltor Done!")
+	}
 
 	return ret
 }
@@ -124,18 +204,21 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 		RunStage:      RunStageReady,
 		nMap:          len(files),
 		nReduce:       nReduce,
+		workers:       make(Set),
 		tasks:         make(map[string]Task),
 		availableTask: make(chan Task, channelLen),
 	}
 
 	c.RunStage = RunStageProcess
 	for i, file := range files {
+		taskId := generateTaskId(file, i)
 		task := Task{
 			TaskType:  TaskTypeMap,
 			Index:     i,
+			Id:        taskId,
 			InputFile: file,
 		}
-		c.tasks[generateTaskId(file, i)] = task
+		c.tasks[taskId] = task
 		c.availableTask <- task
 	}
 
