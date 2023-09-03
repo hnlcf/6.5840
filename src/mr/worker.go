@@ -108,7 +108,7 @@ func processMapTask(taskId string, task Task, mapf func(string, string) []KeyVal
 	file, content := getFileContents(task)
 	kva := mapf(file, content)
 
-	output := fmt.Sprintf("middle-%s", taskId)
+	output := fmt.Sprintf("mr-tmp-%d", task.Index)
 	outputFile, _ := os.Create(output)
 	for i := 0; i < len(kva); i++ {
 		kv := kva[i]
@@ -127,6 +127,7 @@ func processMapTask(taskId string, task Task, mapf func(string, string) []KeyVal
 
 func processReduceTask(taskId string, task Task, reducef func(string, []string) string) TaskResult {
 	_, content := getFileContents(task)
+
 	lines := strings.Split(content, "\n")
 
 	intermediate := []KeyValue{}
@@ -141,7 +142,7 @@ func processReduceTask(taskId string, task Task, reducef func(string, []string) 
 
 	sort.Sort(ByKey(intermediate))
 
-	output := fmt.Sprintf("output-%s", taskId)
+	output := fmt.Sprintf("mr-out-%d", task.Index)
 	outputFile, _ := os.Create(output)
 
 	result := make(map[string]string)

@@ -72,15 +72,14 @@ func (c *Coordinator) AskTask(args *TaskRequest, reply *TaskReply) error {
 		if args.WorkerState == WorkerStateIdle {
 			select {
 			case t := <-c.availableTask:
-				id := generateTaskId(t.InputFile, t.Index)
 				reply.Task = t
-				reply.TaskId = id
+				reply.TaskId = t.Id
 
 				c.lock.Lock()
-				delete(c.tasks, id)
+				delete(c.tasks, t.Id)
 				c.lock.Unlock()
 
-				logger.Infof("[server]: Pass task %s to worker %d.", id, args.WokerId)
+				logger.Infof("[server]: Pass task %s to worker %d.", t.Id, args.WokerId)
 
 				c.RunStage = RunStageProcess
 				reply.isSuccess = true
@@ -110,10 +109,11 @@ func (c *Coordinator) ReportTaskResult(args *TaskResult, reply *int) error {
 		logger.Infof("[server]: Task %s is already processed by worker %d.", args.WorkTask.Id, args.WokerId)
 
 		if args.WorkTask.TaskType == TaskTypeMap {
-			id := generateTaskId(args.Output, args.WorkTask.Index)
+			index := len(c.tasks)
+			id := generateTaskId("reduce", index)
 			reduceTask := Task{
 				TaskType:  TaskTypeReduce,
-				Index:     args.WorkTask.Index,
+				Index:     index,
 				Id:        id,
 				InputFile: args.Output,
 			}
@@ -211,7 +211,7 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 
 	c.RunStage = RunStageProcess
 	for i, file := range files {
-		taskId := generateTaskId(file, i)
+		taskId := generateTaskId("map", i)
 		task := Task{
 			TaskType:  TaskTypeMap,
 			Index:     i,
