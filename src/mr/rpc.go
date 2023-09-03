@@ -20,13 +20,15 @@ const (
 )
 
 const (
-	WorkerStateIdle    = 0
-	WorkerStateProcess = 1
+	ExecStatusSuccess = 0
+	ExecStatusFail    = 1
 )
 
 const (
-	ExecStatusSuccess = 0
-	ExecStatusFail    = 1
+	TaskStateWait   = 0
+	TaskStateMap    = 1
+	TaskStateReduce = 2
+	TaskStateEnd    = 3
 )
 
 type InitRequest struct {
@@ -53,15 +55,13 @@ type Task struct {
 }
 
 type TaskRequest struct {
-	WokerId     int
-	WorkerState int
+	WokerId int
 }
 
 type TaskReply struct {
-	isSuccess   bool
-	Task        Task
-	TaskId      string
-	ServerStage int
+	Task      Task
+	TaskId    string
+	TaskState int
 }
 
 type TaskResult struct {
@@ -81,18 +81,17 @@ func CallInitWorker() (bool, InitReply) {
 	return is_ok, reply
 }
 
-func CallAskTask(wokerId int) (bool, TaskReply) {
+func CallAskTask(wokerId int) TaskReply {
 	args := TaskRequest{
-		WokerId:     wokerId,
-		WorkerState: WorkerStateIdle,
+		WokerId: wokerId,
 	}
 	reply := TaskReply{
-		isSuccess: true,
+		TaskState: TaskStateWait,
 	}
 
-	is_ok := call("Coordinator.AskTask", &args, &reply)
+	call("Coordinator.AskTask", &args, &reply)
 
-	return is_ok && reply.isSuccess, reply
+	return reply
 }
 
 func CallReportTaskResult(res TaskResult) (bool, int) {

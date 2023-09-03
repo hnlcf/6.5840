@@ -7,6 +7,7 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"time"
 )
 
 // KeyValue
@@ -60,44 +61,31 @@ func Worker(mapf func(string, string) []KeyValue,
 		workerId = initReply.WokerId
 	}
 
-	runStage := RunStageReady
+WorkLoop:
 	for {
-		is_get_task := false
-		reply := TaskReply{}
-		for !is_get_task {
-			is_get_task, reply = CallAskTask(workerId)
-		}
-		logger.Debugf("[worker %d]: Get a new task with stage %d.", workerId, reply.ServerStage)
+		taskReply := CallAskTask(workerId)
 
-		runStage = reply.ServerStage
-		if runStage == RunStageDone {
+		switch taskReply.TaskState {
+		case TaskStateWait:
+			time.Sleep(time.Duration(time.Second * 5))
+		case TaskStateMap:
+			logger.Debugf("[worker %d]: Get a new task %s with stage %d.", workerId, taskReply.TaskId, taskReply.TaskState)
+
+			taskResult := processMapTask(taskReply.TaskId, taskReply.Task, mapf)
+			CallReportTaskResult(taskResult)
+		case TaskStateReduce:
+			logger.Debugf("[worker %d]: Get a new task %s with stage %d.", workerId, taskReply.TaskId, taskReply.TaskState)
+
+			taskResult := processReduceTask(taskReply.TaskId, taskReply.Task, reducef)
+			CallReportTaskResult(taskResult)
+		case TaskStateEnd:
 			logger.Infof("[worker %d]: Recieve exit signal from server.", workerId)
-			break
-		}
 
-		logger.Infof("[worker %d]: Get task %s from server.", workerId, reply.TaskId)
+			break WorkLoop
+		default:
+			logger.Errorf("[worker %d]: Unknown task state %d", workerId, taskReply.TaskState)
 
-		is_report := false
-		taskResult := TaskResult{}
-		if reply.Task.TaskType == TaskTypeMap {
-			taskResult = processMapTask(reply.TaskId, reply.Task, mapf)
-		}
-		if reply.Task.TaskType == TaskTypeReduce {
-			taskResult = processReduceTask(reply.TaskId, reply.Task, reducef)
-		}
-		logger.Debugf("[worker %d]: Already process task %s.", workerId, reply.TaskId)
-
-		is_report, runStage = CallReportTaskResult(taskResult)
-		if is_report {
-			logger.Infof("[worker %d]: Report result of task %s to server.", workerId, reply.TaskId)
-		} else {
-			logger.Warnf("[worker %d]: Failed to report result of task %s to server.", workerId, reply.TaskId)
-			continue
-		}
-
-		if runStage == RunStageDone {
-			logger.Infof("[worker %d]: Recieve exit signal from server.", workerId)
-			break
+			panic("Panic Now!")
 		}
 	}
 

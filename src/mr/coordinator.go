@@ -67,41 +67,41 @@ func (c *Coordinator) AskTask(args *TaskRequest, reply *TaskReply) error {
 		logger.Debugf("[server]: All tasks done.")
 
 		c.RunStage = RunStageDone
-		reply.isSuccess = true
+
+		reply.TaskState = TaskStateEnd
+		return nil
 	} else {
-		if args.WorkerState == WorkerStateIdle {
-			select {
-			case t := <-c.availableTask:
-				reply.Task = t
-				reply.TaskId = t.Id
-
-				c.lock.Lock()
-				delete(c.tasks, t.Id)
-				c.lock.Unlock()
-
-				logger.Infof("[server]: Pass task %s to worker %d.", t.Id, args.WokerId)
-
-				c.RunStage = RunStageProcess
-				reply.isSuccess = true
-			default:
-				logger.Warnf("[server]: Chanel is empty now, please retry.")
-
-				c.RunStage = RunStageProcess
-				reply.isSuccess = false
+		select {
+		case t := <-c.availableTask:
+			reply.Task = t
+			reply.TaskId = t.Id
+			if t.TaskType == TaskTypeMap {
+				reply.TaskState = TaskStateMap
+			} else {
+				reply.TaskState = TaskStateReduce
 			}
-		} else {
-			logger.Warnf("[server]: worker %d is busy with state %d.", args.WokerId, args.WorkerState)
+
+			c.lock.Lock()
+			delete(c.tasks, t.Id)
+			c.lock.Unlock()
+
+			logger.Infof("[server]: Pass task %s to worker %d.", t.Id, args.WokerId)
 
 			c.RunStage = RunStageProcess
-			reply.isSuccess = false
+
+		default:
+			logger.Warnf("[server]: Chanel is empty now, please retry.")
+
+			c.RunStage = RunStageProcess
+
+			reply.TaskState = TaskStateWait
 		}
 
 		logger.Debugf("[server]: %d tasks left.", len(c.tasks))
+
+		return nil
 	}
 
-	reply.ServerStage = c.RunStage
-
-	return nil
 }
 
 func (c *Coordinator) ReportTaskResult(args *TaskResult, reply *int) error {
