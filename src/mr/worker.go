@@ -35,9 +35,7 @@ func ihash(key string) int {
 	return int(h.Sum32() & 0x7fffffff)
 }
 
-func getFileContents(task Task) (string, string) {
-	inputFile := task.InputFile
-
+func getFileContents(inputFile string) (string, string) {
 	file, err := os.Open(inputFile)
 	if err != nil {
 		logger.Warnf("[worker %d]: Cannot open %v.", workerId, inputFile)
@@ -69,14 +67,14 @@ WorkLoop:
 		case TaskStateWait:
 			time.Sleep(time.Duration(time.Second * 5))
 		case TaskStateMap:
-			logger.Debugf("[worker %d]: Get a new task %s with stage %d.", workerId, taskReply.TaskId, taskReply.TaskState)
+			logger.Infof("[worker %d]: Get a new map task %s with stage %d.", workerId, taskReply.TaskId, taskReply.TaskState)
 
-			taskResult := processMapTask(taskReply.TaskId, taskReply.Task, mapf)
+			taskResult := processMapTask(taskReply.NReduce, taskReply.Task, mapf)
 			CallReportTaskResult(taskResult)
 		case TaskStateReduce:
-			logger.Debugf("[worker %d]: Get a new task %s with stage %d.", workerId, taskReply.TaskId, taskReply.TaskState)
+			logger.Infof("[worker %d]: Get a new reduce task %s with stage %d.", workerId, taskReply.TaskId, taskReply.TaskState)
 
-			taskResult := processReduceTask(taskReply.TaskId, taskReply.Task, reducef)
+			taskResult := processReduceTask(taskReply.NMap, taskReply.Task, reducef)
 			CallReportTaskResult(taskResult)
 		case TaskStateEnd:
 			logger.Infof("[worker %d]: Recieve exit signal from server.", workerId)
@@ -92,46 +90,61 @@ WorkLoop:
 	CallAskQuit(workerId)
 }
 
-func processMapTask(taskId string, task Task, mapf func(string, string) []KeyValue) TaskResult {
-	file, content := getFileContents(task)
+func processMapTask(nReduce int, task Task, mapf func(string, string) []KeyValue) TaskResult {
+	file, content := getFileContents(task.InputFile)
 	kva := mapf(file, content)
 
-	output := fmt.Sprintf("mr-tmp-%d", task.Index)
-	outputFile, _ := os.Create(output)
+	outputNames := make([]string, nReduce)
+	outputFiles := make([]*os.File, nReduce)
+	for i := 0; i < nReduce; i++ {
+		outputNames[i] = fmt.Sprintf("mr-tmp-%d-%d", task.Index, i)
+		outputFiles[i], _ = os.Create(outputNames[i])
+	}
+
 	for i := 0; i < len(kva); i++ {
 		kv := kva[i]
-		fmt.Fprintf(outputFile, "%s,%s\n", kv.Key, kv.Value)
+		outputIndex := ihash(kv.Key) % nReduce
+
+		fmt.Fprintf(outputFiles[outputIndex], "%s,%s\n", kv.Key, kv.Value)
 	}
-	outputFile.Close()
+
+	for _, f := range outputFiles {
+		f.Close()
+	}
 
 	res := TaskResult{
 		WokerId:    workerId,
 		WorkTask:   task,
 		ExecStatus: ExecStatusSuccess,
-		Output:     output,
+		Output:     outputNames,
 	}
 	return res
 }
 
-func processReduceTask(taskId string, task Task, reducef func(string, []string) string) TaskResult {
-	_, content := getFileContents(task)
-
-	lines := strings.Split(content, "\n")
-
+func processReduceTask(nMap int, task Task, reducef func(string, []string) string) TaskResult {
 	intermediate := []KeyValue{}
-	for _, l := range lines {
-		if len(l) != 0 {
-			parts := strings.Split(l, ",")
+	for i := 0; i < nMap; i++ {
+		fileName := fmt.Sprintf("mr-tmp-%d-%d", i, task.Index)
+		_, content := getFileContents(fileName)
+		lines := strings.Split(content, "\n")
 
-			kv := KeyValue{Key: parts[0], Value: parts[1]}
-			intermediate = append(intermediate, kv)
+		for _, l := range lines {
+			if len(l) != 0 {
+				parts := strings.Split(l, ",")
+
+				kv := KeyValue{Key: parts[0], Value: parts[1]}
+				intermediate = append(intermediate, kv)
+			}
 		}
 	}
 
 	sort.Sort(ByKey(intermediate))
 
-	output := fmt.Sprintf("mr-out-%d", task.Index)
-	outputFile, _ := os.Create(output)
+	output := make([]string, 10)
+	outputName := fmt.Sprintf("mr-out-%d", task.Index)
+	outputFile, _ := os.Create(outputName)
+
+	output = append(output, outputName)
 
 	result := make(map[string]string)
 

@@ -11,38 +11,95 @@ import (
 )
 
 const (
-	RunStageReady   = 0
-	RunStageProcess = 1
-	RunStageDone    = 2
+	RunStageReady  = 0
+	RunStageMap    = 1
+	RunStageReduce = 2
+	RunStageDone   = 3
 )
 
-type Set map[int]bool
-
-func (s Set) Add(item int) {
-	s[item] = true
+type WorkerSet struct {
+	Lock sync.Mutex
+	Set  map[int]bool
 }
 
-func (s Set) Remove(item int) {
-	delete(s, item)
+func (s *WorkerSet) Add(item int) {
+	s.Lock.Lock()
+	s.Set[item] = true
+	s.Lock.Unlock()
 }
 
-func (s Set) Contains(item int) bool {
-	return s[item]
+func (s *WorkerSet) Remove(item int) {
+	s.Lock.Lock()
+	delete(s.Set, item)
+	s.Lock.Unlock()
 }
 
-func (s Set) IsEmpty() bool {
-	return len(s) == 0
+func (s *WorkerSet) Contains(item int) bool {
+	return s.Set[item]
+}
+
+func (s *WorkerSet) Length() int {
+	return len(s.Set)
+}
+
+func (s *WorkerSet) IsEmpty() bool {
+	return len(s.Set) == 0
+}
+
+type TaskManager struct {
+	Lock sync.Mutex
+
+	Table       map[string]Task
+	WorkRecords map[string]Task
+	WaitQueue   chan Task
+}
+
+// Return a Task for ask request
+func (m *TaskManager) PopTask() Task {
+	t := <-m.WaitQueue
+
+	m.Lock.Lock()
+	delete(m.Table, t.Id)
+	m.WorkRecords[t.Id] = t
+	m.Lock.Unlock()
+
+	return t
+}
+
+// Confirm delete task record based on report
+func (m *TaskManager) ConfirmPop(id string) {
+	m.Lock.Lock()
+	delete(m.WorkRecords, id)
+	m.Lock.Unlock()
+}
+
+// Push(or recover) a new task
+func (m *TaskManager) PushTask(t Task) {
+	m.WaitQueue <- t
+
+	m.Lock.Lock()
+	m.Table[t.Id] = t
+	delete(m.WorkRecords, t.Id)
+	m.Lock.Unlock()
+}
+
+func (m *TaskManager) IsEmpty() bool {
+	return len(m.Table) == 0 && len(m.WorkRecords) == 0
+}
+
+func (m *TaskManager) Size() int {
+	return len(m.Table)
 }
 
 type Coordinator struct {
 	RunStage int
 
-	lock          sync.Mutex
-	nMap          int
-	nReduce       int
-	workers       Set
-	tasks         map[string]Task
-	availableTask chan Task
+	nMap    int
+	nReduce int
+	workers WorkerSet
+
+	mapTasks    TaskManager
+	reduceTasks TaskManager
 }
 
 var logger = GetLogger()
@@ -50,10 +107,10 @@ var logger = GetLogger()
 // Your code here -- RPC handlers for the worker to call.
 
 func (c *Coordinator) InitWorker(args *InitRequest, reply *InitReply) error {
-	id := len(c.workers)
+	id := c.workers.Length()
 
 	reply.WokerId = id
-	c.workers[id] = true
+	c.workers.Add(id)
 
 	logger.Infof("[server]: Register a new worker %d.", id)
 
@@ -63,83 +120,78 @@ func (c *Coordinator) InitWorker(args *InitRequest, reply *InitReply) error {
 func (c *Coordinator) AskTask(args *TaskRequest, reply *TaskReply) error {
 	logger.Debugf("[server]: Get a new ask from worker %d.", args.WokerId)
 
-	if len(c.tasks) == 0 {
+	// Finish reduce stage, over.
+	if c.mapTasks.IsEmpty() && c.reduceTasks.IsEmpty() && c.RunStage == RunStageReduce {
 		logger.Debugf("[server]: All tasks done.")
 
 		c.RunStage = RunStageDone
-
 		reply.TaskState = TaskStateEnd
-		return nil
-	} else {
-		select {
-		case t := <-c.availableTask:
-			reply.Task = t
-			reply.TaskId = t.Id
-			if t.TaskType == TaskTypeMap {
-				reply.TaskState = TaskStateMap
-			} else {
-				reply.TaskState = TaskStateReduce
-			}
-
-			c.lock.Lock()
-			delete(c.tasks, t.Id)
-			c.lock.Unlock()
-
-			logger.Infof("[server]: Pass task %s to worker %d.", t.Id, args.WokerId)
-
-			c.RunStage = RunStageProcess
-
-		default:
-			logger.Warnf("[server]: Chanel is empty now, please retry.")
-
-			c.RunStage = RunStageProcess
-
-			reply.TaskState = TaskStateWait
-		}
-
-		logger.Debugf("[server]: %d tasks left.", len(c.tasks))
 
 		return nil
 	}
 
+	// Finish map stage, switch to init reduce stage.
+	if c.mapTasks.IsEmpty() && c.reduceTasks.IsEmpty() && c.RunStage == RunStageMap {
+		logger.Debugf("[server]: All map tasks done, start reduce stage")
+
+		initReduceStage(c)
+		reply.TaskState = TaskStateWait
+
+		return nil
+	}
+
+	switch c.RunStage {
+	case RunStageMap:
+		t := c.mapTasks.PopTask()
+		reply.Task = t
+		reply.TaskId = t.Id
+		reply.TaskState = TaskStateMap
+
+		logger.Debugf("[server]: Pass map task %s to worker %d.", t.Id, args.WokerId)
+		logger.Debugf("[server]: %d map tasks left.", c.mapTasks.Size())
+	case RunStageReduce:
+		t := c.reduceTasks.PopTask()
+		reply.Task = t
+		reply.TaskId = t.Id
+		reply.TaskState = TaskStateReduce
+
+		logger.Debugf("[server]: Pass reduce task %s to worker %d.", t.Id, args.WokerId)
+		logger.Debugf("[server]: %d reduce tasks left.", c.reduceTasks.Size())
+	default:
+		reply.TaskState = TaskStateWait
+
+		logger.Warnf("[server]: Chanel is empty now, please retry.")
+	}
+
+	reply.NReduce = c.nReduce
+	reply.NMap = c.nMap
+
+	return nil
 }
 
 func (c *Coordinator) ReportTaskResult(args *TaskResult, reply *int) error {
-	if args.ExecStatus == ExecStatusSuccess {
-		logger.Infof("[server]: Task %s is already processed by worker %d.", args.WorkTask.Id, args.WokerId)
+	if args.WorkTask.TaskType == TaskTypeMap {
+		if args.ExecStatus == ExecStatusSuccess {
+			c.mapTasks.ConfirmPop(args.WorkTask.Id)
 
-		if args.WorkTask.TaskType == TaskTypeMap {
-			index := len(c.tasks)
-			id := generateTaskId("reduce", index)
-			reduceTask := Task{
-				TaskType:  TaskTypeReduce,
-				Index:     index,
-				Id:        id,
-				InputFile: args.Output,
-			}
+			logger.Infof("[server]: Map task %s is already processed by worker %d.", args.WorkTask.Id, args.WokerId)
+		} else {
+			c.mapTasks.PushTask(args.WorkTask)
 
-			c.lock.Lock()
-			c.tasks[id] = reduceTask
-			c.lock.Unlock()
-
-			c.availableTask <- reduceTask
-
-			logger.Infof("[server]: Create new reduce task %s based on map task %s.", generateTaskId(reduceTask.InputFile, reduceTask.Index), args.WorkTask.Id)
+			logger.Warnf("[server]: Worker %d failed to process map task %s.", args.WokerId, args.WorkTask.Id)
 		}
-	} else {
-		c.lock.Lock()
-		c.tasks[args.WorkTask.Id] = args.WorkTask
-		c.lock.Unlock()
-
-		c.availableTask <- c.tasks[args.WorkTask.Id]
-
-		logger.Warnf("[server]: Worker %d failed to process task %s.", args.WokerId, args.WorkTask.Id)
 	}
 
-	if len(c.tasks) == 0 {
-		*reply = RunStageDone
-	} else {
-		*reply = RunStageProcess
+	if args.WorkTask.TaskType == TaskTypeReduce {
+		if args.ExecStatus == ExecStatusSuccess {
+			c.reduceTasks.ConfirmPop(args.WorkTask.Id)
+
+			logger.Infof("[server]: Reduce task %s is already processed by worker %d.", args.WorkTask.Id, args.WokerId)
+		} else {
+			c.reduceTasks.PushTask(args.WorkTask)
+
+			logger.Warnf("[server]: Worker %d failed to process reduce task %s.", args.WokerId, args.WorkTask.Id)
+		}
 	}
 
 	return nil
@@ -149,9 +201,7 @@ func (c *Coordinator) AskQuit(args *QuitRequest, reply *QuitReply) error {
 	if c.RunStage == RunStageDone && args.AskQuit {
 		reply.IsQuit = true
 
-		c.lock.Lock()
 		c.workers.Remove(args.WokerId)
-		c.lock.Unlock()
 
 		logger.Infof("[server]: worker %d is quit now.", args.WokerId)
 	}
@@ -184,7 +234,7 @@ func (c *Coordinator) Done() bool {
 	ret := false
 
 	// Your code here.
-	if len(c.tasks) == 0 {
+	if c.RunStage == RunStageDone {
 		ret = true
 		logger.Debug("[server]: Coordinaltor Done!")
 	}
@@ -200,16 +250,37 @@ func (c *Coordinator) Done() bool {
 func MakeCoordinator(files []string, nReduce int) *Coordinator {
 	channelLen := int(math.Max(float64(len(files)), float64(nReduce)))
 	c := Coordinator{
-		lock:          sync.Mutex{},
-		RunStage:      RunStageReady,
-		nMap:          len(files),
-		nReduce:       nReduce,
-		workers:       make(Set),
-		tasks:         make(map[string]Task),
-		availableTask: make(chan Task, channelLen),
+		RunStage: RunStageReady,
+		nMap:     len(files),
+		nReduce:  nReduce,
+		workers: WorkerSet{
+			Lock: sync.Mutex{},
+			Set:  make(map[int]bool),
+		},
+		mapTasks: TaskManager{
+			Lock:        sync.Mutex{},
+			Table:       make(map[string]Task),
+			WorkRecords: make(map[string]Task),
+			WaitQueue:   make(chan Task, channelLen),
+		},
+		reduceTasks: TaskManager{
+			Lock:        sync.Mutex{},
+			Table:       make(map[string]Task),
+			WorkRecords: make(map[string]Task),
+			WaitQueue:   make(chan Task, channelLen),
+		},
 	}
 
-	c.RunStage = RunStageProcess
+	initMapStage(&c, files)
+
+	logger.Infof("[server]: ===Coordiantor start===")
+	c.server()
+
+	return &c
+}
+
+func initMapStage(c *Coordinator, files []string) {
+	c.RunStage = RunStageMap
 	for i, file := range files {
 		taskId := generateTaskId("map", i)
 		task := Task{
@@ -218,14 +289,23 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 			Id:        taskId,
 			InputFile: file,
 		}
-		c.tasks[taskId] = task
-		c.availableTask <- task
+		c.mapTasks.PushTask(task)
 	}
+}
 
-	logger.Infof("[server]: ===Coordiantor start===")
-	c.server()
+func initReduceStage(c *Coordinator) {
+	c.RunStage = RunStageReduce
 
-	return &c
+	for i := 0; i < c.nReduce; i++ {
+		taskId := generateTaskId("reduce", i)
+		task := Task{
+			TaskType:  TaskTypeReduce,
+			Index:     i,
+			Id:        taskId,
+			InputFile: "none",
+		}
+		c.reduceTasks.PushTask(task)
+	}
 }
 
 func generateTaskId(t string, index int) string {

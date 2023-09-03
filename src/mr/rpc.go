@@ -62,13 +62,15 @@ type TaskReply struct {
 	Task      Task
 	TaskId    string
 	TaskState int
+	NReduce   int
+	NMap      int
 }
 
 type TaskResult struct {
 	WokerId    int
 	WorkTask   Task
 	ExecStatus int
-	Output     string
+	Output     []string
 }
 
 // Add your RPC definitions here.
@@ -94,13 +96,13 @@ func CallAskTask(wokerId int) TaskReply {
 	return reply
 }
 
-func CallReportTaskResult(res TaskResult) (bool, int) {
+func CallReportTaskResult(res TaskResult) bool {
 	args := res
 	reply := 0
 
 	is_ok := call("Coordinator.ReportTaskResult", &args, &reply)
 
-	return is_ok, reply
+	return is_ok
 }
 func CallAskQuit(workerId int) (bool, QuitReply) {
 	args := QuitRequest{
