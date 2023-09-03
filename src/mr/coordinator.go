@@ -38,7 +38,7 @@ func (s *WorkerSet) Contains(item int) bool {
 	return s.Set[item]
 }
 
-func (s *WorkerSet) Length() int {
+func (s *WorkerSet) Size() int {
 	return len(s.Set)
 }
 
@@ -55,15 +55,23 @@ type TaskManager struct {
 }
 
 // Return a Task for ask request
-func (m *TaskManager) PopTask() Task {
-	t := <-m.WaitQueue
+func (m *TaskManager) PopTask() (Task, bool) {
+	t := Task{}
+	is_ok := false
 
-	m.Lock.Lock()
-	delete(m.Table, t.Id)
-	m.WorkRecords[t.Id] = t
-	m.Lock.Unlock()
+	select {
+	case t = <-m.WaitQueue:
+		m.Lock.Lock()
+		delete(m.Table, t.Id)
+		m.WorkRecords[t.Id] = t
+		m.Lock.Unlock()
 
-	return t
+		is_ok = true
+	default:
+		logger.Warnf("[server]: Chanel is empty now, please retry.")
+	}
+
+	return t, is_ok
 }
 
 // Confirm delete task record based on report
@@ -107,7 +115,7 @@ var logger = GetLogger()
 // Your code here -- RPC handlers for the worker to call.
 
 func (c *Coordinator) InitWorker(args *InitRequest, reply *InitReply) error {
-	id := c.workers.Length()
+	id := c.workers.Size()
 
 	reply.WokerId = id
 	c.workers.Add(id)
@@ -142,25 +150,35 @@ func (c *Coordinator) AskTask(args *TaskRequest, reply *TaskReply) error {
 
 	switch c.RunStage {
 	case RunStageMap:
-		t := c.mapTasks.PopTask()
-		reply.Task = t
-		reply.TaskId = t.Id
-		reply.TaskState = TaskStateMap
+		t, is_ok := c.mapTasks.PopTask()
+		if is_ok {
+			reply.Task = t
+			reply.TaskId = t.Id
+			reply.TaskState = TaskStateMap
 
-		logger.Debugf("[server]: Pass map task %s to worker %d.", t.Id, args.WokerId)
+			logger.Debugf("[server]: Pass map task %s to worker %d.", t.Id, args.WokerId)
+		} else {
+			reply.TaskState = TaskStateWait
+		}
+
 		logger.Debugf("[server]: %d map tasks left.", c.mapTasks.Size())
 	case RunStageReduce:
-		t := c.reduceTasks.PopTask()
-		reply.Task = t
-		reply.TaskId = t.Id
-		reply.TaskState = TaskStateReduce
+		t, is_ok := c.reduceTasks.PopTask()
+		if is_ok {
+			reply.Task = t
+			reply.TaskId = t.Id
+			reply.TaskState = TaskStateReduce
 
-		logger.Debugf("[server]: Pass reduce task %s to worker %d.", t.Id, args.WokerId)
+			logger.Debugf("[server]: Pass reduce task %s to worker %d.", t.Id, args.WokerId)
+		} else {
+			reply.TaskState = TaskStateWait
+		}
+
 		logger.Debugf("[server]: %d reduce tasks left.", c.reduceTasks.Size())
 	default:
-		reply.TaskState = TaskStateWait
+		reply.TaskState = TaskStateEnd
 
-		logger.Warnf("[server]: Chanel is empty now, please retry.")
+		logger.Warnf("[server]: Unknown running state.")
 	}
 
 	reply.NReduce = c.nReduce
@@ -234,8 +252,9 @@ func (c *Coordinator) Done() bool {
 	ret := false
 
 	// Your code here.
-	if c.RunStage == RunStageDone {
+	if c.RunStage == RunStageDone && c.workers.IsEmpty() {
 		ret = true
+
 		logger.Debug("[server]: Coordinaltor Done!")
 	}
 
