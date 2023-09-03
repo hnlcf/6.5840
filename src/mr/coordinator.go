@@ -8,6 +8,7 @@ import (
 	"net/rpc"
 	"os"
 	"sync"
+	"time"
 )
 
 const (
@@ -67,6 +68,14 @@ func (m *TaskManager) PopTask() (Task, bool) {
 		m.Lock.Unlock()
 
 		is_ok = true
+
+		go func() {
+			time.Sleep(time.Second * 10)
+			_, is_exist := m.WorkRecords[t.Id]
+			if is_exist {
+				m.PushTask(t)
+			}
+		}()
 	default:
 		logger.Warnf("[server]: Chanel is empty now, please retry.")
 	}
