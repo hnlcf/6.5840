@@ -129,7 +129,7 @@ func (c *Coordinator) AskTask(args *TaskRequest, reply *TaskReply) error {
 	logger.Debugf("[server]: Get a new ask from worker %d.", args.WokerId)
 
 	// Finish reduce stage, over.
-	if c.mapTasks.IsEmpty() && c.reduceTasks.IsEmpty() && c.RunStage == RunStageReduce {
+	if c.mapTasks.IsEmpty() && c.reduceTasks.IsEmpty() && (c.RunStage == RunStageReduce || c.RunStage == RunStageDone) {
 		logger.Debugf("[server]: All tasks done.")
 
 		c.RunStage = RunStageDone
@@ -178,7 +178,7 @@ func (c *Coordinator) AskTask(args *TaskRequest, reply *TaskReply) error {
 	default:
 		reply.TaskState = TaskStateEnd
 
-		logger.Warnf("[server]: Unknown running state.")
+		logger.Warnf("[server]: Illegal running state.")
 	}
 
 	reply.NReduce = c.nReduce
@@ -299,7 +299,6 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 }
 
 func initMapStage(c *Coordinator, files []string) {
-	c.RunStage = RunStageMap
 	for i, file := range files {
 		taskId := generateTaskId("map", i)
 		task := Task{
@@ -310,11 +309,11 @@ func initMapStage(c *Coordinator, files []string) {
 		}
 		c.mapTasks.PushTask(task)
 	}
+
+	c.RunStage = RunStageMap
 }
 
 func initReduceStage(c *Coordinator) {
-	c.RunStage = RunStageReduce
-
 	for i := 0; i < c.nReduce; i++ {
 		taskId := generateTaskId("reduce", i)
 		task := Task{
@@ -325,6 +324,8 @@ func initReduceStage(c *Coordinator) {
 		}
 		c.reduceTasks.PushTask(task)
 	}
+
+	c.RunStage = RunStageReduce
 }
 
 func generateTaskId(t string, index int) string {
