@@ -5,6 +5,7 @@ import (
 	"hash/fnv"
 	"io"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -94,11 +95,13 @@ func processMapTask(nReduce int, task Task, mapf func(string, string) []KeyValue
 	file, content := getFileContents(task.InputFile)
 	kva := mapf(file, content)
 
+	tmpNames := make([]string, nReduce)
 	outputNames := make([]string, nReduce)
 	outputFiles := make([]*os.File, nReduce)
 	for i := 0; i < nReduce; i++ {
-		outputNames[i] = fmt.Sprintf("mr-tmp-%d-%d", task.Index, i)
-		outputFiles[i], _ = os.Create(outputNames[i])
+		tmpNames[i] = fmt.Sprintf("mr-tmp-%d-%d", task.Index, i)
+		outputNames[i] = fmt.Sprintf("mr-%d-%d", task.Index, i)
+		outputFiles[i], _ = os.Create(tmpNames[i])
 	}
 
 	for i := 0; i < len(kva); i++ {
@@ -108,8 +111,11 @@ func processMapTask(nReduce int, task Task, mapf func(string, string) []KeyValue
 		fmt.Fprintf(outputFiles[outputIndex], "%s,%s\n", kv.Key, kv.Value)
 	}
 
-	for _, f := range outputFiles {
+	for i, f := range outputFiles {
 		f.Close()
+
+		oldpath := filepath.Join(f.Name())
+		os.Rename(oldpath, outputNames[i])
 	}
 
 	res := TaskResult{
@@ -124,7 +130,7 @@ func processMapTask(nReduce int, task Task, mapf func(string, string) []KeyValue
 func processReduceTask(nMap int, task Task, reducef func(string, []string) string) TaskResult {
 	intermediate := []KeyValue{}
 	for i := 0; i < nMap; i++ {
-		fileName := fmt.Sprintf("mr-tmp-%d-%d", i, task.Index)
+		fileName := fmt.Sprintf("mr-%d-%d", i, task.Index)
 		_, content := getFileContents(fileName)
 		lines := strings.Split(content, "\n")
 
@@ -141,10 +147,9 @@ func processReduceTask(nMap int, task Task, reducef func(string, []string) strin
 	sort.Sort(ByKey(intermediate))
 
 	output := make([]string, 10)
+	tmpName := fmt.Sprintf("mr-tmp-%d", task.Index)
 	outputName := fmt.Sprintf("mr-out-%d", task.Index)
-	outputFile, _ := os.Create(outputName)
-
-	output = append(output, outputName)
+	outputFile, _ := os.Create(tmpName)
 
 	result := make(map[string]string)
 
@@ -168,6 +173,10 @@ func processReduceTask(nMap int, task Task, reducef func(string, []string) strin
 	}
 
 	outputFile.Close()
+	oldpath := filepath.Join(outputFile.Name())
+	os.Rename(oldpath, outputName)
+
+	output = append(output, outputName)
 
 	res := TaskResult{
 		WokerId:    workerId,
