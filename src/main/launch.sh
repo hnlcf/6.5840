@@ -1,8 +1,12 @@
 #!/usr/bin/env bash
 
 function init() {
-    rm -f mr-out* middle* output*
+    rm -f mr-out-*
     rm -f wc.so
+}
+
+function clean() {
+    rm -f mr-tmp-*
 }
 
 function server() {
@@ -32,6 +36,8 @@ function main() {
             echo "Unknown command: $cmd"
             ;;
     esac
+
+    clean
 }
 
 main "$@"
